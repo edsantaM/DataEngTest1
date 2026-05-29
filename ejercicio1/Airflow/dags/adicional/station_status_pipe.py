@@ -22,7 +22,7 @@ START_DATE = pendulum.datetime(2026, 1, 1, tz="UTC")
     default_args=DEFAULT_ARGS,
     description="ETL pipeline for landing to bronze and Trino publication",
     start_date=START_DATE,
-    schedule=None,
+    schedule="*/10 * * * *",
     catchup=False,
     tags=["data-engineering", "challenge", "minio", "trino"],
 )
