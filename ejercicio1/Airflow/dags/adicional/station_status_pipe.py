@@ -102,7 +102,92 @@ def status_stations_pipe():
             logger.exception("Error loading into minio")
             raise
 
-    load_to_bronze()
+        return {
+            "bucket": tgt_bucket,
+            "key": tgt_key,
+            "run_id": run_id,
+        }
+
+    @task
+    def load_to_trino(load_result: dict):
+        from trino.dbapi import connect
+        import os
+
+        import logging
+        from airflow.hooks.base import BaseHook
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+
+        #variables 
+        schema_location = "s3a://bck-bronze/station_status/schema"
+        table_location = "s3a://bck-bronze/station_status/data"
+
+        try:
+            trino_conn = BaseHook.get_connection("trino_default")
+            trino_host = trino_conn.host
+            trino_port = trino_conn.port
+            trino_user = trino_conn.login
+            extra = trino_conn.extra_dejson  
+        except Exception:
+            logger.exception("Error retrieving Trino connection")
+            raise
+        
+        try:
+            conn = connect(
+                host=trino_host,
+                port=trino_port,
+                user=trino_user,
+                catalog="bronze",
+                schema="ecobici",
+                http_scheme="http",
+            )
+
+            cursor = conn.cursor()
+        except Exception:
+            logger.exception("Error connecting to Trino")
+            cursor.close()
+            conn.close()
+            raise
+
+        create_schema_query = f"""
+        CREATE SCHEMA IF NOT EXISTS bronze.ecobici
+        WITH (LOCATION = '{schema_location}')
+        """
+
+        create_table_query = f"""
+        CREATE TABLE IF NOT EXISTS bronze.ecobici.station_status (
+            station_id varchar,
+            num_bikes_available bigint,
+            num_docks_available bigint,
+            is_installed boolean,
+            is_renting boolean,
+            is_returning boolean,
+            is_charging_station boolean,
+            eightd_has_available_keys boolean,
+            last_updated_ts timestamp(3),
+            last_reported_ts timestamp(3),
+            run_id varchar
+        )
+        WITH (
+            external_location = '{table_location}',
+            format = 'PARQUET',
+            partitioned_by = ARRAY['run_id']
+        )
+        """
+        try:
+            cursor.execute(create_schema_query)
+            cursor.execute(create_table_query)
+            cursor.execute("CALL bronze.system.sync_partition_metadata('ecobici', 'station_status', 'ADD', true)")
+            cursor.close()
+            conn.close()
+        except Exception:
+            logger.exception("Error creating schema or table in Trino")
+            cursor.close()
+            conn.close()
+            raise
+
+    bronze_result = load_to_bronze()
+    load_to_trino(bronze_result)
 
 
 dag = status_stations_pipe()
