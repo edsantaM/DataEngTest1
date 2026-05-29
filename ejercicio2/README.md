@@ -326,3 +326,4 @@ Seguiría el mismo formato de capas:
 
 A esa tabla solo tendrían acceso las personas con permisos suficientes.
 
+ 
