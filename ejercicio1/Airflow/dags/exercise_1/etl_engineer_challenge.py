@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from io import BytesIO
+import logging
 from pathlib import Path
 
 import pendulum
@@ -52,7 +53,6 @@ def etl_engineer_challenge():
         tgt_path = TARGET_KEY
 
         try:
-            logger.info("process_data: retrieving MinIO connection")
             minio_conn = BaseHook.get_connection("minio_default")
             endpoint_url = minio_conn.extra_dejson.get(
                 "endpoint_url",
@@ -60,7 +60,6 @@ def etl_engineer_challenge():
             )
             access_key = minio_conn.login
             secret_key = minio_conn.password
-            logger.info("process_data: MinIO connection retrieved")
         except Exception:
             logger.exception("Error retrieving MinIO connection")
             raise
@@ -69,7 +68,6 @@ def etl_engineer_challenge():
             raise ValueError("The Airflow connection 'minio_default' must include login and password.")
 
         try:
-            logger.info("process_data: creating S3 client")
             s3 = boto3.client(
                 "s3",
                 endpoint_url=endpoint_url,
@@ -78,25 +76,20 @@ def etl_engineer_challenge():
                 region_name=minio_conn.extra_dejson.get("region_name", "us-east-1"),
             )
 
-            logger.info("process_data: reading CSV from MinIO bucket=%s key=%s", src_bucket, src_path)
             csv_bytes = s3.get_object(Bucket=src_bucket, Key=src_path)["Body"].read()
-            logger.info("process_data: CSV bytes read successfully")
 
-            logger.info("process_data: loading CSV into DataFrame")
             raw = pd.read_csv(
                 BytesIO(csv_bytes),
                 dtype="string",
                 keep_default_na=True,
                 na_values=["", "null", "NULL"],
             )
-            logger.info("process_data: DataFrame loaded rows=%s cols=%s", raw.shape[0], raw.shape[1])
         except Exception:
             logger.exception("Error reading CSV from S3")
             raise
 
         try:
-            logger.info("process_data: starting cleaning")
-            raw["amount"] = pd.to_numeric(raw["amount"],errors="coerce")
+            raw["amount"] = raw["amount"].astype("float64")
             raw["created_at"] = pd.to_datetime(raw["created_at"], errors="coerce").dt.date
             raw["paid_at"] = pd.to_datetime(raw["paid_at"], errors="coerce").dt.date
             stg = raw.copy()
@@ -116,14 +109,13 @@ def etl_engineer_challenge():
                 .first()
                 .rename(columns={"name": "canonical_name"})
             )
-            logger.info("1")
+
             stg = stg.merge(name_to_company, on="name", how="left")
             stg = stg.merge(company_to_name, on="company_id", how="left")
             stg["company_id_filled"] = stg["company_id"].fillna(stg["canonical_company_id"])
             stg["name_filled"] = stg["name"].fillna(stg["canonical_name"])
             stg = stg.drop(columns=["canonical_company_id", "canonical_name"])
 
-            logger.info("2")
             valid_statuses = {
                 "paid",
                 "voided",
@@ -139,8 +131,7 @@ def etl_engineer_challenge():
 
             stg.loc[stg["name"].isin(["MiP0xFFFF", "MiPas0xFFFF"]), "name_filled"] = "MiPasajefy"
 
-            logger.info("3")
-            amount_num = pd.to_numeric(stg["amount"], errors="coerce")
+            amount_num = stg["amount"].astype("float64")
             p99 = amount_num.quantile(0.99)
 
             mask_amounts = (
@@ -151,7 +142,6 @@ def etl_engineer_challenge():
             )
 
             stg = stg[mask_amounts]
-            logger.info("process_data: rejected rows due to amount=%s", stg_rejected.shape[0])
 
             stg = stg.drop(columns=["company_id", "name", "status"])
             stg = stg.rename(
@@ -166,13 +156,11 @@ def etl_engineer_challenge():
             stg["pendig_payment"] = stg["status"].eq("pending_payment")
             stg["paid_amount"] = stg["amount"].where(stg["is_paid"], 0.0)
             stg["pending_amount"] = stg["amount"].where(stg["pendig_payment"], 0.0)
-            logger.info("process_data: cleaning finished rows=%s cols=%s", stg.shape[0], stg.shape[1])
         except Exception:
             logger.exception("Error during data cleaning")
             raise
 
         try:
-            logger.info("process_data: starting aggregation")
             aggregated = (
                 stg.groupby(["name", "created_at"], as_index=False)
                 .agg(
@@ -188,27 +176,19 @@ def etl_engineer_challenge():
                 )
                 .sort_values(["created_at", "name"])
             )
-            logger.info(
-                "process_data: aggregation finished rows=%s cols=%s",
-                aggregated.shape[0],
-                aggregated.shape[1],
-            )
         except Exception:
             logger.exception("Error during data aggregation")
             raise
 
         try:
-            logger.info("process_data: writing parquet to MinIO bucket=%s key=%s", tgt_bucket, tgt_path)
             with tempfile.TemporaryDirectory() as tmpdir:
                 parquet_path = Path(tmpdir) / "data_prueba_tecnica.parquet"
                 aggregated.to_parquet(parquet_path, index=False, engine="pyarrow", compression="snappy")
                 s3.upload_file(str(parquet_path), tgt_bucket, tgt_path)
-            logger.info("process_data: parquet written successfully")
         except Exception:
             logger.exception("Error writing Parquet to S3")
             raise
 
-        logger.info("process_data: end")
         return {
             "source_bucket": src_bucket,
             "source_key": src_path,
@@ -217,7 +197,83 @@ def etl_engineer_challenge():
             "rows_written": int(aggregated.shape[0]),
         }
 
-    process_data()
+    @task
+    
+    def load_to_trino(load_result: dict):
+        from trino.dbapi import connect
+        import logging
+        from airflow.hooks.base import BaseHook
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+
+        #variables 
+        schema_location = "s3a://bck-bronze/prueba"
+        table_location = "s3a://bck-bronze/master/"
+
+        try:
+            trino_conn = BaseHook.get_connection("trino_default")
+            trino_host = trino_conn.host
+            trino_port = trino_conn.port
+            trino_user = trino_conn.login
+            extra = trino_conn.extra_dejson  
+        except Exception:
+            logger.exception("Error retrieving Trino connection")
+            
+            raise
+        
+        try:
+            conn = connect(
+                host=trino_host,
+                port=trino_port,
+                user=trino_user,
+                catalog="bronze",
+                schema="prueba",
+                http_scheme="http",
+            )
+
+            cursor = conn.cursor()
+        except Exception:
+            logger.exception("Error connecting to Trino")
+            cursor.close()
+            conn.close()
+            raise
+
+        
+        create_schema_query = f"CREATE SCHEMA IF NOT EXISTS bronze.prueba with (LOCATION = '{schema_location}')"
+
+        create_table_query = f"""
+                CREATE TABLE IF NOT EXISTS bronze.prueba.tbl_data (
+                    name varchar,
+                    created_at date,
+                    transactions bigint,
+                    total_amount double,
+                    average_amount double,
+                    paid_transactions bigint,
+                    paid_amount double,
+                    pending_payment_transactions  bigint,
+                    pending_amount double,
+                    min_amount double,
+                    max_amount double
+                )
+                WITH (
+                    external_location = '{table_location}',
+                    format = 'PARQUET'
+                )
+                """
+        try:
+            cursor.execute(create_schema_query)
+            cursor.execute(create_table_query)
+
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            logging.error(f"Error creating schema or table: {e}")
+            cursor.close()
+            conn.close()
+            raise
+
+    load_result = process_data()
+    load_to_trino(load_result)
 
 
 dag = etl_engineer_challenge()
