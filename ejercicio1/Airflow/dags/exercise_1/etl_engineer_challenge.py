@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from io import BytesIO
-
-from anyio import Path
+from pathlib import Path
 
 import pendulum
 from airflow.decorators import dag, task
@@ -19,6 +18,8 @@ DEFAULT_ARGS = {
 START_DATE = pendulum.datetime(2026, 1, 1, tz="UTC")
 SOURCE_BUCKET = "bck-landing"
 SOURCE_KEY = "data/data_prueba_tecnica.csv"
+TARGET_BUCKET = "bck-bronze"
+TARGET_KEY = "master/data_prueba_tecnica.parquet"
 
 
 @dag(
@@ -33,36 +34,42 @@ SOURCE_KEY = "data/data_prueba_tecnica.csv"
 def etl_engineer_challenge():
     @task
     def process_data():
-        import os
-        import boto3
-        import pandas as pd
-        from trino.dbapi import connect
         import logging
-        from io import BytesIO
         import tempfile
-        from airflow.hooks.base import BaseHook
+
+        import boto3
         import numpy as np
+        import pandas as pd
+        from airflow.hooks.base import BaseHook
+
         logging.basicConfig(level=logging.INFO)
-
         logger = logging.getLogger(__name__)
-        #variables 
-        src_bucket = "bck-landing"
-        src_path = "data/data_prueba_tecnica.csv"
-        tgt_bucket = "bck-bronze"
-        tgt_path = "master/data_prueba_tecnica.parquet"
 
-        minio_conn = BaseHook.get_connection("minio_default")
-        endpoint_url = minio_conn.extra_dejson.get(
-            "endpoint_url",
-            f"http://{minio_conn.host}:{minio_conn.port or 9000}",
-        )
-        access_key = minio_conn.login
-        secret_key = minio_conn.password
+        logger.info("process_data: start")
+        src_bucket = SOURCE_BUCKET
+        src_path = SOURCE_KEY
+        tgt_bucket = TARGET_BUCKET
+        tgt_path = TARGET_KEY
+
+        try:
+            logger.info("process_data: retrieving MinIO connection")
+            minio_conn = BaseHook.get_connection("minio_default")
+            endpoint_url = minio_conn.extra_dejson.get(
+                "endpoint_url",
+                f"http://{minio_conn.host}:{minio_conn.port or 9000}",
+            )
+            access_key = minio_conn.login
+            secret_key = minio_conn.password
+            logger.info("process_data: MinIO connection retrieved")
+        except Exception:
+            logger.exception("Error retrieving MinIO connection")
+            raise
 
         if not access_key or not secret_key:
             raise ValueError("The Airflow connection 'minio_default' must include login and password.")
 
         try:
+            logger.info("process_data: creating S3 client")
             s3 = boto3.client(
                 "s3",
                 endpoint_url=endpoint_url,
@@ -71,25 +78,31 @@ def etl_engineer_challenge():
                 region_name=minio_conn.extra_dejson.get("region_name", "us-east-1"),
             )
 
-            csv_bytes = s3.get_object(Bucket=SOURCE_BUCKET, Key=SOURCE_KEY)["Body"].read()
+            logger.info("process_data: reading CSV from MinIO bucket=%s key=%s", src_bucket, src_path)
+            csv_bytes = s3.get_object(Bucket=src_bucket, Key=src_path)["Body"].read()
+            logger.info("process_data: CSV bytes read successfully")
+
+            logger.info("process_data: loading CSV into DataFrame")
             raw = pd.read_csv(
                 BytesIO(csv_bytes),
                 dtype="string",
                 keep_default_na=True,
                 na_values=["", "null", "NULL"],
             )
-        except Exception as e:
-            logging.info(f"Error reading CSV from S3: {e}")
+            logger.info("process_data: DataFrame loaded rows=%s cols=%s", raw.shape[0], raw.shape[1])
+        except Exception:
+            logger.exception("Error reading CSV from S3")
             raise
-        #hasta aca solo se lee el csv, para el analisis se creó un notebook para la ejecucion mas práctica.
 
-        #limpieza
         try:
-            stg = raw.copy() 
-            #1. omitir id nulos
-            stg = stg[stg['id'].notna()]
+            logger.info("process_data: starting cleaning")
+            raw["amount"] = pd.to_numeric(raw["amount"],errors="coerce")
+            raw["created_at"] = pd.to_datetime(raw["created_at"], errors="coerce").dt.date
+            raw["paid_at"] = pd.to_datetime(raw["paid_at"], errors="coerce").dt.date
+            stg = raw.copy()
 
-            #2 y 3 mapear company_id a nombre y nombre a company id
+            stg = stg[stg["id"].notna()]
+
             name_to_company = (
                 raw.dropna(subset=["company_id", "name"])
                 .groupby("name", as_index=False)["company_id"]
@@ -103,14 +116,14 @@ def etl_engineer_challenge():
                 .first()
                 .rename(columns={"name": "canonical_name"})
             )
-
-            stg = stg.merge(name_to_company, on ="name", how="left")
+            logger.info("1")
+            stg = stg.merge(name_to_company, on="name", how="left")
             stg = stg.merge(company_to_name, on="company_id", how="left")
             stg["company_id_filled"] = stg["company_id"].fillna(stg["canonical_company_id"])
             stg["name_filled"] = stg["name"].fillna(stg["canonical_name"])
-            stg = stg.drop(columns=[ "canonical_company_id", "canonical_name"])
+            stg = stg.drop(columns=["canonical_company_id", "canonical_name"])
 
-            #4 columna de status
+            logger.info("2")
             valid_statuses = {
                 "paid",
                 "voided",
@@ -122,13 +135,11 @@ def etl_engineer_challenge():
                 "partially_refunded",
             }
 
-
             stg["status_clean"] = stg["status"].where(stg["status"].isin(valid_statuses), "unknown")
 
-            #5. eliminar nombres sospechosos
             stg.loc[stg["name"].isin(["MiP0xFFFF", "MiPas0xFFFF"]), "name_filled"] = "MiPasajefy"
 
-            #drop outliers en amount
+            logger.info("3")
             amount_num = pd.to_numeric(stg["amount"], errors="coerce")
             p99 = amount_num.quantile(0.99)
 
@@ -139,25 +150,29 @@ def etl_engineer_challenge():
                 & amount_num.le(p99)
             )
 
-            stg_rejected = stg[~mask_amounts].copy()
             stg = stg[mask_amounts]
+            logger.info("process_data: rejected rows due to amount=%s", stg_rejected.shape[0])
 
-
-            #result 
             stg = stg.drop(columns=["company_id", "name", "status"])
-            stg = stg.rename(columns={"company_id_filled": "company_id", "name_filled": "name", "status_clean": "status"})
+            stg = stg.rename(
+                columns={
+                    "company_id_filled": "company_id",
+                    "name_filled": "name",
+                    "status_clean": "status",
+                }
+            )
 
             stg["is_paid"] = stg["status"].eq("paid")
             stg["pendig_payment"] = stg["status"].eq("pending_payment")
             stg["paid_amount"] = stg["amount"].where(stg["is_paid"], 0.0)
             stg["pending_amount"] = stg["amount"].where(stg["pendig_payment"], 0.0)
-        except Exception as e:
-            logging.info(f"Error during data cleaning: {e}")
+            logger.info("process_data: cleaning finished rows=%s cols=%s", stg.shape[0], stg.shape[1])
+        except Exception:
+            logger.exception("Error during data cleaning")
             raise
 
-
-        #agregaciones 
         try:
+            logger.info("process_data: starting aggregation")
             aggregated = (
                 stg.groupby(["name", "created_at"], as_index=False)
                 .agg(
@@ -173,18 +188,34 @@ def etl_engineer_challenge():
                 )
                 .sort_values(["created_at", "name"])
             )
-        except Exception as e:
-            logging.info(f"Error during data aggregation: {e}")
+            logger.info(
+                "process_data: aggregation finished rows=%s cols=%s",
+                aggregated.shape[0],
+                aggregated.shape[1],
+            )
+        except Exception:
+            logger.exception("Error during data aggregation")
             raise
 
         try:
+            logger.info("process_data: writing parquet to MinIO bucket=%s key=%s", tgt_bucket, tgt_path)
             with tempfile.TemporaryDirectory() as tmpdir:
                 parquet_path = Path(tmpdir) / "data_prueba_tecnica.parquet"
                 aggregated.to_parquet(parquet_path, index=False, engine="pyarrow", compression="snappy")
                 s3.upload_file(str(parquet_path), tgt_bucket, tgt_path)
-        except Exception as e:
-            logging.info(f"Error writing Parquet to S3: {e}")
+            logger.info("process_data: parquet written successfully")
+        except Exception:
+            logger.exception("Error writing Parquet to S3")
             raise
+
+        logger.info("process_data: end")
+        return {
+            "source_bucket": src_bucket,
+            "source_key": src_path,
+            "target_bucket": tgt_bucket,
+            "target_key": tgt_path,
+            "rows_written": int(aggregated.shape[0]),
+        }
 
     process_data()
 
