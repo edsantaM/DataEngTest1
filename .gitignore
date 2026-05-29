@@ -1,5 +1,0 @@
-gitignore
-ejercicio1/Airflow/.env
-Data Engineering Test.txt
-ejercicio1/Airflow/logs
-ejercicio1/Airflow/dags/exercise_1/main.ipynb
