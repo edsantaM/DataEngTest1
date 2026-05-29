@@ -58,7 +58,7 @@ Una vez terminado el ejercicio, responde a las siguientes preguntas dentro del a
 2. Considerando las columnas name y company_id ¿Qué inconsistencias notas y como las mitigas? 
 3. Para el resto de los campos ¿Encuentras valores atípicos y de ser así cómo procedes? 
 4. ¿Qué mejoras propondrías a tu proceso ETL para siguientes versiones?
- 5. Guardar una captura de pantalla como imagen, de la query con Trino usando DBeaver 
+5. Guardar una captura de pantalla como imagen, de la query con Trino usando DBeaver 
  
 Ejercicio 2 
 Considera el siguiente escenario asumiendo el rol de ingeniero de datos: 
