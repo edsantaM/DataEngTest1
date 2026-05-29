@@ -1,0 +1,90 @@
+Data Engineering Test 
+Motivación: Te agradecemos aceptar esta prueba como parte del proceso de reclutamiento para el puesto de ingenier@ de datos en GFB.
+En promedio la gente sólo resuelve el 68% del examen. No te preocupes, nos interesa conocer tu forma de pensar, plantear problemas y resolverlos: ¡tu creatividad! Cualquier duda sobre el test no dudes en preguntar vía email a Luis Angel Juarez ljuarez@bancobase.com, él estará gustoso de responderte. 
+Contenido de ejercicios 
+1. Para el primer ejercicio: Generación de un pipeline en Airflow conectado a un lago de datos. 
+2. Para el segundo ejercicio: la justificación de tu arquitectura como de tus respuestas a las preguntas debe entregarse en formato PDF. El texto puedes elaborarlo con cualquier software solo exportarlo en formato pdf y el diagrama de arquitectura incluyelo en formato SVG. 
+El challenge debe de enviarse en un correo electrónico mbarojas@bancobase.com y ljuarez@bancobase.com en la fecha que acordaste y debe de contener una URL a un repositorio en GitHub, GitLab o Bitbucket público con la siguiente estructura sugerida:
+ ├── ejercicio1(folder)
+│ ├── Airflow (folder)
+│ ├── Minio(folder)
+│ ├── docker-compose.yaml (archivo)
+│ ├── readme.me
+│ └── data_prueba_tecnica.csv
+│ └── <imagen>
+├── ejercicio2(folder)
+│ ├── diagrama (archivo SVG)
+│ └──justificacion_de_tu_arquitectura.pd
+Ejercicio 1: Airflow + Trino 
+Se te proporciona el archivo data_prueba_tecnica.csv el cual contiene un sample del historial de transacciones de una compañía ficticia, lo encontrarás dentro de la carpeta ejercicio1. 
+Además contarás con un archivo docker-compose.yaml que habilita los siguientes servicios:
+•	Airflow, MinIo, Trino 
+Supuestos: 
+•	Los datos representan transacciones históricas de clientes. 
+•	Los ids de los usuarios están enmascarados mediante un hash. 
+Objetivo: 
+Diseñar e implementar un proceso ETL que permita ingestar, procesar, limpiar y disponibilizar los datos para su consulta. 
+Se considerará un Plus si se usa Polars para todo el tema de procesamiento y manipulación de datos. 
+Instrucciones: 
+1.	Estructura del Data Lake 
+Crea dos bucket dentro de Minio: bck-landing y bck-bronze 
+2.	Ingesta de datos 
+Carga el archivo data_prueba_tecnica.csv previamente creada dentro del bucket path: bck-landing/data/data_prueba_tecnica.csv 
+3.	Generación de DAG 
+Genera un DAG llamado etl_engineer_challenge con los siguientes procesos: 
+3.1.	Lectura de datos: 
+•	Leer el archivo CSV que se cargó previamente en la ruta de minio.
+3.2.	Limpieza de datos, transformación y agregaciones 
+•	Detecte y corrija inconsistencias en los datos 
+•	Realizar agregaciones sobre los campos name y created_at. 
+3.3.	Guardado del resultado 
+Guardar la información procesada en archivo parquet en la siguiente ruta de Minio: 
+•	path: bck-bronze/master/data_prueba_tecnica.parquet 
+4.	Trino
+Generar el proceso necesario para habilitar la información del parquet guardado para ser consultado mediante Query SQL Trino. 
+4.1.	Generar un task adicional al DAG existente para Trino Generar el proceso necesario para habilitar la información del parquet guardado.
+Instrucciones: 
+•	Ya se tiene configurado el catálogo dentro de trino llamado: bronze 
+•	Crear un schema dentro de bronze: prueba 
+•	Crear una tabla dentro del schema bronze.prueba: tbl_data 
+Insumos para Trino: 
+https://trino.io/docs/current/connector/hive.html#basic-usage-examples
+Para visualizar los datos generando query, se recomienda usar DBeaver para conectar con Trino: 
+https://dbeaver.com/docs/dbeaver/Database-driver-Trino/#trino-specialty
+
+Preguntas adicionales: 
+Una vez terminado el ejercicio, responde a las siguientes preguntas dentro del archivo README de la carpeta ejercicio1: 
+1. Para los ids nulos ¿Qué sugieres hacer con ellos ? 
+2. Considerando las columnas name y company_id ¿Qué inconsistencias notas y como las mitigas? 
+3. Para el resto de los campos ¿Encuentras valores atípicos y de ser así cómo procedes? 
+4. ¿Qué mejoras propondrías a tu proceso ETL para siguientes versiones?
+5. Guardar una captura de pantalla como imagen, de la query con Trino usando DBeaver 
+ 
+Ejercicio 2 
+Considera el siguiente escenario asumiendo el rol de ingeniero de datos: 
+El área operativa del departamento de TI tiene tres aplicaciones. Para cada aplicación su fuente de datos es de tipo transaccional y las tres funcionan 24/7. Llamemosles F1, F2 y F3 respectivamente, las cuales poseen las siguientes características: 
+•	F1 es un CRM propietario. Contiene información sobre los clientes e.g. demográficos y datos de contacto. 
+•	F2 tiene un RDBMS SQL Server. Almacena las transacciones de los clientes sobre la mitad de los productos que ofrece la compañía. 
+•	F3 tiene un RDBMS Postgresql. Almacena las transacciones de los clientes sobre el resto de los productos. 
+Ten en cuenta los siguientes supuestos: 
+•	Las tres fuentes de datos F1, F2 y F3 fueron diseñadas de manera independiente tanto a nivel de software como de modelo de datos. 
+•	Como las fuentes de datos son operativas diariamente hay datos nuevos. 
+Tu objetivo es diseñar una arquitectura que consolide la información contenida en las fuentes de datos de F1, F2 y F3 que cumpla con dos propósitos: en primer lugar que habilite a un grupo de usuarios del área operativa a la extracción de consultas por medio de SQL y de manera secundaria que permita al equipo de ciencia de datos la aplicación de algoritmos de detección de patrones como clustering o búsquedas en grafos. 
+Tu diseño puede utilizar herramientas de almacenamiento y procesamiento diferentes para cada propósito si lo consideras necesario. 
+Instrucciones (ejercicio 2): 
+No olvides que las respuestas a las preguntas deben de argumentarse en el entregable: 
+1.	Propón una arquitectura (solo proponla no la construyas) que considere los siguientes aspectos y preguntas:
+a.	De cada fuente de datos se tienen identificados que campos requiere el área operativa. ¿Para cumplir con los dos objetivos que subconjunto de cada fuente de datos extraerías? 
+b.	¿Qué posibles retos implica la extracción de cada una de las fuentes de datos por separado y qué herramientas utilizas ? 
+c.	¿Qué posibles retos implica la independencia en el modelo de datos de las tres fuentes y cómo los resolverías? 
+d.	¿Aparte de un proceso batch en la hora de menor uso, cómo podrías mitigar el impacto de tu pipeline sobre las fuentes originales ? 
+e.	¿Cuáles etapas considerarías en tu proceso de transformación de datos y qué uso les darías? 
+f.	¿Qué herramientas utilizas para las etapas de transformación? 
+g.	¿Qué storage usarías para cada propósito y por qué ? 
+h.	Recuerda que al menos a diario tendrás que llevar data nueva a tu etapa de transformación final, ¿Como orquestarias tu pipeline y con qué herramienta? 
+i.	Proporciona un diagrama de tu propuesta de arquitectura. 
+2.	Seguridad (manteniendo tu rol de ingeniero de datos). 
+a.	¿Cómo mantendrías la seguridad de tu flujo de datos end-to-end? Es decir disminuir riesgos de posibles fugas o intrusiones no deseadas al entorno de ejecución que estás construyendo. 
+3.	 Gobernanza de datos 
+a.	¿Cómo llevarías control de la metadata y sus cambios al igual que los procesos de tu pipeline y cómo almacenamos estos datos? 
+¡Buena suerte! GFB Data Engineering Team.
