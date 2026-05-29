@@ -40,6 +40,8 @@ def etl_engineer_challenge():
         import logging
         from io import BytesIO
         import tempfile
+        from airflow.hooks.base import BaseHook
+        import numpy as np
         logging.basicConfig(level=logging.INFO)
 
         logger = logging.getLogger(__name__)
