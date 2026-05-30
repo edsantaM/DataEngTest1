@@ -218,7 +218,6 @@ def etl_engineer_challenge():
             extra = trino_conn.extra_dejson  
         except Exception:
             logger.exception("Error retrieving Trino connection")
-            
             raise
         
         try:
